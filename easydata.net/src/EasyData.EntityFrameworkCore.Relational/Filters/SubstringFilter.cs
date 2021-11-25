@@ -1,4 +1,6 @@
-﻿using System.Linq;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,14 +13,16 @@ namespace EasyData.Services
     {
         public static string Class = "__substring";
 
-        private string _filterText;
+        private SubstringFilterOptions filterOptions;
 
         public SubstringFilter(MetaData model): base(model) {}
 
         public override object Apply(MetaEntity entity, bool isLookup, object data)
         {
-            if (string.IsNullOrWhiteSpace(_filterText))
+            if (filterOptions == null || string.IsNullOrWhiteSpace(filterOptions.FilterText))
+            {
                 return data;
+            }
 
             return GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
                    .Single(m => m.Name == "Apply"
@@ -31,7 +35,7 @@ namespace EasyData.Services
         private IQueryable<T> Apply<T>(MetaEntity entity, bool isLookup, object data) where T: class
         {
             var query = (IQueryable<T>)data;
-            return query.FullTextSearchQuery(_filterText, GetFilterOptions(entity, isLookup));
+            return query.FullTextSearchQuery(filterOptions, GetFilterOptions(entity, isLookup));
         }
 
         public override async Task ReadFromJsonAsync(JsonReader reader, CancellationToken ct = default)
@@ -42,16 +46,46 @@ namespace EasyData.Services
                 throw new BadJsonFormatException(reader.Path);
             }
 
-            while (await reader.ReadAsync(ct).ConfigureAwait(false)) {
-                if (reader.TokenType == JsonToken.PropertyName) {
-                    var propName = reader.Value.ToString();
-                    switch (propName) {
-                        case "value":
-                            _filterText = await reader.ReadAsStringAsync(ct).ConfigureAwait(false);
-                            break;
-                        default:
-                            await reader.SkipAsync(ct).ConfigureAwait(false);
-                            break;
+            filterOptions = new SubstringFilterOptions();
+            while (await reader.ReadAsync(ct).ConfigureAwait(false)) 
+            {
+                if (reader.TokenType == JsonToken.PropertyName && "options".Equals(reader.Value))
+                {
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    {
+                        if (reader.TokenType == JsonToken.PropertyName)
+                        {
+                            var propName = reader.Value.ToString();
+                            switch (propName)
+                            {
+                                case "filterText":
+                                    filterOptions.FilterText = await reader.ReadAsStringAsync(ct).ConfigureAwait(false);
+                                    break;
+                                case "matchCase":
+                                    filterOptions.MatchCase = await reader.ReadAsBooleanAsync(ct).ConfigureAwait(false);
+                                    break;
+                                case "matchWholeWord":
+                                    filterOptions.MatchWholeWord = await reader.ReadAsBooleanAsync(ct).ConfigureAwait(false);
+                                    break;
+                                case "relatedObjectsToFilter":
+                                    var properties = new List<string>();
+                                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                                    {
+                                        if (reader.TokenType == JsonToken.EndArray)
+                                        {
+                                            break;
+                                        }
+
+                                        var property = await reader.ReadAsStringAsync(ct).ConfigureAwait(false);
+                                        properties.Add(property);
+                                    }
+                                    filterOptions.RelatedObjectsToFilter = properties;
+                                    break;
+                                default:
+                                    await reader.SkipAsync(ct).ConfigureAwait(false);
+                                    break;
+                            }
+                        }
                     }
                 }
                 else if (reader.TokenType == JsonToken.EndObject) {
@@ -65,6 +99,9 @@ namespace EasyData.Services
             return new FullTextSearchOptions
             {
                 Filter = (prop) => {
+
+                    if (filterOptions.RelatedObjectsToFilter.)
+
                     var attr = entity?.FindAttribute(a => a.PropInfo == prop);
                     if (attr == null)
                         return false;
@@ -79,8 +116,14 @@ namespace EasyData.Services
 
                     return true;
                 },
-                Depth = 0
+                MatchCase = filterOptions.MatchCase.GetValueOrDefault(),
+                MatchWholeWord = filterOptions.MatchWholeWord.GetValueOrDefault(),
+                Depth = 1
             };
         }
+
+        bool? IsRelatedObjectProperty(PropertyInfo propertyInfo) => filterOptions
+            .RelatedObjectsToFilter?
+            .Any(p => p.Equals(propertyInfo.Name, StringComparison.InvariantCultureIgnoreCase));
     }
 }

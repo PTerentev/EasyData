@@ -2,6 +2,7 @@ import {
     DataLoader, DataRow, 
     EasyDataTable, utils as dataUtils 
 } from '@easydata/core';
+import { debuglog } from 'util';
 
 import { DataFilter } from './data_filter';
 
@@ -11,7 +12,7 @@ export class TextDataFilter implements DataFilter {
 
     //turns off client-side search
     //for test purposes
-    private justServerSide = false;
+    private justServerSide = true;
 
     constructor (
         private loader: DataLoader, 
@@ -47,7 +48,16 @@ export class TextDataFilter implements DataFilter {
         }
         else {
             const filters = [
-                { class: "__substring", value: this.filterValue }
+                { 
+                    class: "__substring",
+                    options: 
+                    {
+                        filterText: this.filterValue,
+                        matchCase: true,
+                        matchWholeWord: true,
+                        relatedObjectsToFilter: ["Customer"]
+                    },
+                }
             ]
             return this.loader.loadChunk({ 
                 offset: 0, 
@@ -93,6 +103,8 @@ export class TextDataFilter implements DataFilter {
                 filteredTable.columns.add(col);
             }   
             
+            debuglog("test");
+
             const words = this.filterValue.split('||').map(w => w.trim().toLowerCase());
             const hasEnterance = (row: DataRow) => {
                 for (const col of this.sourceTable.columns.getItems()) {

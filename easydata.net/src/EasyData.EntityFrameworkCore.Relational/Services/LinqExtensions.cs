@@ -4,69 +4,43 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
-
-using Exp = System.Linq.Expressions.Expression;
-
 using EasyData.EntityFrameworkCore;
+using Exp = System.Linq.Expressions.Expression;
 
 namespace EasyData.Services
 {
-
     /// <summary>
-    /// Contains options for full text search
+    /// LINQ extensions.
     /// </summary>
-    public class FullTextSearchOptions
-    {
-
-        /// <summary>
-        /// Lamda expression, which filters properties to use in full text search
-        /// </summary>
-        public Func<PropertyInfo, bool> Filter { get; set; }
-
-        /// <summary>
-        /// The name of the property to order by the result list
-        /// </summary>
-        public string OrderBy { get; set; }
-
-        /// <summary>
-        /// if set to <c>true</c> then we use descending order
-        /// </summary>
-        public bool IsDescendingOrder { get; set; } = false;
-
-        /// <summary>
-        /// Depth of full text search. 
-        /// </summary>
-        public int Depth { get; set; } = 0;
-    }
-
     public static class LinqExtensions
     {
         /// <summary>
-        /// Filters a sequence of values based on a fulltext search predicate 
+        /// Filters a sequence of values based on a full text search predicate 
         /// </summary>
         /// <typeparam name="T">Any type</typeparam>
         /// <param name="source">The source - some IQueryable object.</param>
-        /// <param name="text">The text - meaning of the search</param>
+        /// <param name="filterOptions">Filter options.</param>
         /// <param name="options">The options for full-text search</param>
-        /// <returns></returns>
-        public static IQueryable<T> FullTextSearchQuery<T>(this IQueryable<T> source, string text, FullTextSearchOptions options = null)
+        public static IQueryable<T> FullTextSearchQuery<T>(this IQueryable<T> source, SubstringFilterOptions filterOptions, FullTextSearchOptions options = null)
         {
-
             var pe = Exp.Parameter(typeof(T), "d");
-            var predicateBody = CreateSubExpression(pe, typeof(T), text, options, isQueriable: true);
+            var predicateBody = CreateSubExpression(pe, typeof(T), filterOptions, options, isQueriable: true);
 
-            if (predicateBody != null) {
+            if (predicateBody != null)
+            {
                 var whereExp = Exp.Lambda<Func<T, bool>>(predicateBody, new ParameterExpression[] { pe });
                 source = source.Where(whereExp);
             }
 
             //Order by Expression
-            if (options == null) {
+            if (options == null)
+            {
                 return source;
             }
 
             var orderByProperty = options.OrderBy;
-            if (string.IsNullOrEmpty(orderByProperty)) {
+            if (string.IsNullOrEmpty(orderByProperty))
+            {
                 orderByProperty = typeof(T).GetProperties().First().Name;
             }
 
@@ -78,9 +52,9 @@ namespace EasyData.Services
             return source;
         }
 
-        private static Exp CreateSubExpression(Exp pe, Type type, string text, FullTextSearchOptions options, bool isQueriable = false)
+        private static Exp CreateSubExpression(Exp pe, Type type, SubstringFilterOptions filterOptions, FullTextSearchOptions options, bool isQueriable = false)
         {
-            var texts = text.Split(new string[] { "||" }, StringSplitOptions.RemoveEmptyEntries)
+            var texts = filterOptions.FilterText.Split(new string[] { "||" }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(t => t.Trim().ToLower())
                     .Where(t => t.Length > 0)
                     .ToList();
@@ -91,10 +65,11 @@ namespace EasyData.Services
             }
 
             Exp predicateBody = null;
-            foreach (var prop in properties) {
-
+            foreach (var prop in properties)
+            {
                 //Check if we can use this property in Search
-                if (options == null || options.Filter == null || options.Filter.Invoke(prop)) {
+                if (options == null || options.Filter == null || options.Filter.Invoke(prop))
+                {
                     var paramExp = Exp.Property(pe, prop);
 
                     if (prop.PropertyType == typeof(string) || prop.PropertyType == typeof(int)
@@ -144,40 +119,82 @@ namespace EasyData.Services
                         Exp peLower = Exp.Call(toStringExp, typeof(string).GetMethod("ToLower", System.Type.EmptyTypes));
 
                         Exp conditionExp = null;
-                        foreach (var txt in texts) {
+                        foreach (var txt in texts)
+                        {
                             var constant = Exp.Constant(txt, typeof(string));
-                            Exp containsExp = Exp.Call(peLower, typeof(string).GetMethod("Contains", new[] { typeof(string) }), constant);
+                            var constantLower = Exp.Call(constant, typeof(string).GetMethod("ToLower", System.Type.EmptyTypes));
+
+                            Exp matchExp = null;
+                            if (filterOptions.MatchWholeWord == true)
+                            {
+                                if (filterOptions.MatchCase == true)
+                                {
+                                    matchExp = Exp.Equal(toStringExp, constant);
+                                }
+                                else
+                                {
+                                    matchExp = Exp.Equal(peLower, constantLower);
+                                }
+                            }
+                            else
+                            {
+                                if (filterOptions.MatchCase == true)
+                                {
+                                    matchExp = toStringExp.ContainsString(constant);
+                                }
+                                else
+                                {
+                                    matchExp = peLower.ContainsString(constantLower);
+                                }
+                            }
+
                             if (conditionExp != null) {
-                                conditionExp = Exp.OrElse(conditionExp, containsExp);
+                                conditionExp = Exp.OrElse(conditionExp, matchExp);
                             }
                             else {
-                                conditionExp = containsExp;
+                                conditionExp = matchExp;
                             }
                         }
 
                         Exp andExp = (notNullExp != null) ? Exp.AndAlso(notNullExp, conditionExp) : conditionExp;
-                        if (predicateBody != null) {
+                        if (predicateBody != null)
+                        {
                             predicateBody = Exp.OrElse(predicateBody, andExp);
                         }
-                        else {
+                        else
+                        {
                             predicateBody = andExp;
                         }
                     }
 
-                    //If this property is't simple and the depth > 0
-                    if (options != null && options.Depth != 0
-                        && !prop.PropertyType.IsSimpleType() && !prop.PropertyType.IsEnumerable()) {
-                        options.Depth -= 1;
-                        var subExp = CreateSubExpression(paramExp, prop.PropertyType, text, options, isQueriable);
-                        options.Depth += 1;
+                    var isRelatedObjectProperty = filterOptions.RelatedObjectsToFilter?
+                        .Any(p => p.Equals(prop.Name, StringComparison.InvariantCultureIgnoreCase));
 
-                        if (subExp != null) {
-                            Exp notNullExp = Exp.NotEqual(paramExp, Exp.Constant(null, typeof(object)));
-                            subExp = Exp.AndAlso(notNullExp, subExp);
-                            predicateBody = (predicateBody != null) ? Exp.OrElse(predicateBody, subExp) : subExp;
+                    if (isRelatedObjectProperty == true)
+                    {
+                        //If this property is't simple and the depth > 0
+                        if (options != null && options.Depth != 0
+                            && !prop.PropertyType.IsSimpleType() && !prop.PropertyType.IsEnumerable())
+                        {
+                            var relatedFilterOptions = new SubstringFilterOptions()
+                            {
+                                FilterText = filterOptions.FilterText,
+                                MatchCase = filterOptions.MatchCase,
+                                MatchWholeWord = filterOptions.MatchWholeWord,
+                            };
+
+                            options.Depth -= 1;
+                            var subExp = CreateSubExpression(paramExp, prop.PropertyType, relatedFilterOptions, options, isQueriable);
+                            options.Depth += 1;
+
+                            if (subExp != null)
+                            {
+                                Exp notNullExp = Exp.NotEqual(paramExp, Exp.Constant(null, typeof(object)));
+                                subExp = Exp.AndAlso(notNullExp, subExp);
+                                predicateBody = (predicateBody != null) ? Exp.OrElse(predicateBody, subExp) : subExp;
+                            }
                         }
                     }
-
                 }
             }
 
